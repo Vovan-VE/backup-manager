@@ -17,6 +17,13 @@ Backup restored: build-backups/build.2021-04-30_02-56-36.aaabbbc.tgz => serve
 
 See `backup-manager -h` for details.
 
+## Installation
+
+- NPM: `npm i github:Vovan-VE/backup-manager`;
+- Composer: add repository to `repositories` in `composer.json`, then
+  `composer require NAME`;
+- manual: copy `bin/backup-manager` to one of your `$PATH` directories.
+
 ## Creating backup
 
 ```sh
