@@ -1,0 +1,17 @@
+{
+  "name": "vovan-ve/backup-manager",
+  "description": "Shell script to create and restore backups",
+  "type": "library",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "Vovan-VE",
+      "email": "vovan-ve@yandex.ru"
+    }
+  ],
+  "support": {
+    "issues": "https://github.com/Vovan-VE/backup-manager/issues"
+  },
+  "bin": ["bin/backup-manager"],
+  "require": {}
+}

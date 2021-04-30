@@ -1,0 +1,26 @@
+{
+  "name": "shell-backup-manager",
+  "version": "0.1.0",
+  "description": "Shell script to create and restore backups",
+  "min": "bin/backup-manager",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Vovan-VE/backup-manager.git"
+  },
+  "keywords": [
+    "shell",
+    "backup"
+  ],
+  "author": {
+    "name": "Vovan-VE",
+    "email": "vovan-ve@yandex.ru"
+  },
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/Vovan-VE/backup-manager/issues"
+  },
+  "homepage": "https://github.com/Vovan-VE/backup-manager#readme"
+}
