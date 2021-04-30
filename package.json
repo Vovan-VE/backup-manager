@@ -1,8 +1,8 @@
 {
   "name": "shell-backup-manager",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Shell script to create and restore backups",
-  "min": "bin/backup-manager",
+  "bin": "bin/backup-manager",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
