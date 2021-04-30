@@ -1,0 +1,452 @@
+#!/bin/bash
+
+SELF="$( basename "$0" )"
+EXT=tgz
+DATE_FORMAT='%F_%H-%M-%S'
+DATE_PATTERN='????-??-??_??-??-??'
+
+_checkDependencies() {
+  while [ $# -gt 0 ]; do
+    NAME="$1"
+    shift
+    if ! which "$NAME" > /dev/null; then
+      echo "$SELF: $NAME not found or not accessible" >&2
+      exit 1
+    fi
+  done
+}
+
+# Delete old backups out of the latest $1 in directory $2 matching glob $3 (find -name)
+_deleteOld() {
+  local KEEP_COUNT="$1"
+  local FILE_PATH="$2"
+  local FILE_PATTERN="$3"
+
+  find "$FILE_PATH" -mindepth 1 -maxdepth 1 -type f -name "$FILE_PATTERN" \
+    | sort -r \
+    | tail -n "+$(( KEEP_COUNT + 1 ))" \
+    | xargs -r rm -fv
+}
+
+# Find backup in directory $1 matching glob $2 (find -name)
+_findBackup() {
+  local FILE_PATH="$1"
+  local FILE_PATTERN="$2"
+
+  find "$FILE_PATH" -mindepth 1 -maxdepth 1 -type f -name "$FILE_PATTERN" \
+    | sort -r \
+    | head -n1
+}
+
+# Ensure the directory $2 from option $1 exists. If $3 is not empty, then the
+# directory would be created when necessary.
+_ensureDir() {
+  local OPT="$1"
+  local DIR="$2"
+  local CREATE="$3"
+
+  # empty value passed?
+  if [ -z "$DIR" ]; then
+    echo "$SELF: $OPT: value is required" >&2
+    exit 1
+  fi
+
+  # does not exist or not a directory
+  if ! [ -d "$DIR" ]; then
+    # not allowed to create
+    if [ -z "$CREATE" ]; then
+      echo "$SELF: $OPT: no such directory: $DIR" >&2
+      exit 1
+    elif mkdir -p "$DIR"; then
+      echo "Directory created: $DIR" >&2
+    else
+      echo "$SELF: $OPT: couldn't create directory: $DIR" >&2
+      exit 1
+    fi
+  fi
+}
+
+# The "backup" command
+cmdBackup() {
+  _checkDependencies date find mkdir rm sort tail tar xargs
+
+  local SRC_DIR=.
+  local BKP_DIR=
+  local BKP_DIR_CREATE=
+  local REV=
+  local ROTATE_KEEP_COUNT=10
+  local PREFIX=
+
+  while getopts :s:b:B:r:n:p: ARG; do
+    case "$ARG" in
+      s)  SRC_DIR="$OPTARG" ;;
+      B)  BKP_DIR="$OPTARG"; BKP_DIR_CREATE=1 ;;
+      b)  BKP_DIR="$OPTARG" ;;
+      r)  REV="$OPTARG" ;;
+      p)  PREFIX="$OPTARG" ;;
+      n)
+        # is it integer > 0?
+        if [[ "$OPTARG" =~ ^[0-9]+$ ]] && [ "$OPTARG" -gt 0 ] ; then
+          ROTATE_KEEP_COUNT="$OPTARG"
+        else
+          echo "$SELF: -$ARG: value must be positive integer, but $OPTARG given" >&2
+          exit 1
+        fi
+        ;;
+      :)
+        echo "$SELF: option -$OPTARG requires a value" >&2
+        exit 1
+        ;;
+      \?)
+        echo "$SELF: unrecognized option -$OPTARG" >&2
+        exit 1
+        ;;
+    esac
+  done
+  shift $(( OPTIND - 1 ))
+
+  _ensureDir -s "$SRC_DIR"
+  _ensureDir -b "$BKP_DIR" "$BKP_DIR_CREATE"
+  # remove possible trailing /
+  BKP_DIR="$( dirname "$BKP_DIR/." )"
+
+  local REV_STR=
+  if [ -n "$REV" ]; then
+    [[ "$REV" =~ ^[a-z]{7,40}$ ]] || {
+      echo "$SELF: -r: revision must be SHA1 abbrev from 7 to 40 chars" >&2
+      exit 1
+    }
+    REV_STR=".$REV"
+  fi
+
+  if [ -z "$PREFIX" ]; then
+    PREFIX="$( basename "$( realpath "$SRC_DIR" )" )"
+  fi
+  local DATE="$( date -u +"$DATE_FORMAT" )"
+  local BACKUP_PATH="$BKP_DIR/$PREFIX.$DATE$REV_STR.$EXT"
+
+  # find free filename by possibly adding index ".I.tgz"
+  local N=0
+  while [ -e "$BACKUP_PATH" ]; do
+    (( N++ ))
+    BACKUP_PATH="$BKP_DIR/$PREFIX.$DATE$REV_STR.$N.$EXT"
+  done
+
+  # archive directory content without directory itself
+  # https://stackoverflow.com/a/39530409
+  find "$SRC_DIR" -printf "%P\n" \
+    | tar -czf "$BACKUP_PATH" --no-recursion -C "$SRC_DIR" -T - \
+    || {
+      echo "$SELF: cannot create backup: exit code $?" >&2
+      exit 2
+    }
+  echo "Backup created: $BACKUP_PATH"
+
+  # delete old backups
+  _deleteOld "$ROTATE_KEEP_COUNT" "$BKP_DIR" "$PREFIX.$DATE_PATTERN*.$EXT" || {
+    echo "$SELF: couldn't delete some old backups from $BKP_DIR" >&2
+  }
+}
+
+# The "restore" command
+cmdRestore() {
+  _checkDependencies find head ls mkdir mv rm rmdir sort tar xargs
+
+  local SRC_DIR=
+  local BKP_FILE=
+  local BKP_DIR=
+  local PREFIX=
+  local REV=
+
+  while getopts :s:b:p:r:f: ARG; do
+    case "$ARG" in
+      s)  SRC_DIR="$OPTARG" ;;
+      b)  BKP_DIR="$OPTARG" ;;
+      p)  PREFIX="$OPTARG" ;;
+      r)  REV="$OPTARG" ;;
+      f)  BKP_FILE="$OPTARG" ;;
+      :)
+        echo "$SELF: option -$OPTARG requires a value" >&2
+        exit 1
+        ;;
+      \?)
+        echo "$SELF: unrecognized option -$OPTARG" >&2
+        exit 1
+        ;;
+    esac
+  done
+  shift $(( OPTIND - 1 ))
+
+  _ensureDir -s "$SRC_DIR"
+  # remove possible trailing /
+  SRC_DIR="$( dirname "$SRC_DIR/." )"
+
+  if [ -n "$BKP_FILE" ]; then
+    # backup file is given by -f
+    if ! [ -e "$BKP_FILE" ]; then
+      echo "$SELF: file not found: $BKP_FILE" >&2
+      exit 1
+    fi
+  else
+    # neither -f, nor -b?
+    if [ -z "$BKP_DIR" ]; then
+      echo "$SELF: neither -f nor -b was specified" >&2
+      exit 1
+    fi
+
+    _ensureDir -b "$BKP_DIR"
+    if [ -z "$PREFIX" ]; then
+      PREFIX="$( basename "$( realpath "$SRC_DIR" )" )"
+    fi
+
+    local REV_STR=
+    if [ -n "$REV" ]; then
+      [[ "$REV" =~ ^[a-z]{7,40}$ ]] || {
+        echo "$SELF: -r: revision must be SHA1 abbrev from 7 to 40 chars" >&2
+        exit 1
+      }
+      REV_STR=".$REV"
+    fi
+
+    # search backup file
+    local BKP_FILE_PATTERN="$PREFIX.$DATE_PATTERN$REV_STR*.$EXT"
+    BKP_FILE="$( _findBackup "$BKP_DIR" "$BKP_FILE_PATTERN" )"
+    if [ -z "$BKP_FILE" ]; then
+      echo "$SELF: no backups found in '$BKP_DIR', pattern: $BKP_FILE_PATTERN" >&2
+      exit 1
+    fi
+  fi
+
+  local SRC_DIR_NEW="$SRC_DIR.new"
+  local SRC_DIR_OLD="$SRC_DIR.old"
+
+  # precheck for "old" directory
+  # "old" exists?
+  if [ -e "$SRC_DIR_OLD" ]; then
+    if [ -d "$SRC_DIR_OLD" ]; then
+      # "old" is a directory
+      # trying to it if it's empty
+      if ! rmdir "$SRC_DIR_OLD"; then
+        echo "$SELF: temp directory exists and is not empty (or cannot be deleted): $SRC_DIR_OLD" >&2
+        exit 1
+      fi
+    else
+      # "old" isn't a directory
+      echo "$SELF: temp filename is occupied by non-directory: $SRC_DIR_OLD" >&2
+      exit 1
+    fi
+  fi
+
+  # prepare "new" directory
+  mkdir -p "$SRC_DIR_NEW" || {
+    echo "$SELF: could not create temp directory to extract to: $SRC_DIR_NEW" >&2
+    exit 1
+  }
+  # extract into "new" directory
+  tar -xzf "$BKP_FILE" -C "$SRC_DIR_NEW" || {
+    echo "$SELF: could not extract backup to temp directory: $BKP_FILE => $SRC_DIR_NEW" >&2
+    exit 1
+  }
+  # rename SRC to "old"
+  mv "$SRC_DIR" "$SRC_DIR_OLD" || {
+    echo "$SELF: could not rename old directory: $SRC_DIR => $SRC_DIR_OLD" >&2
+    exit 1
+  }
+  # rename "new" to SRC
+  mv "$SRC_DIR_NEW" "$SRC_DIR" || {
+    echo "$SELF: could not rename new directory: $SRC_DIR_NEW => $SRC_DIR" >&2
+    # rename "old" back to SRC
+    mv "$SRC_DIR_OLD" "$SRC_DIR" || {
+      echo "$SELF: could not rename old directory back: $SRC_DIR => $SRC_DIR_OLD" >&2
+    }
+    exit 1
+  }
+  # cleanup "old" directory
+  rm -rf "$SRC_DIR_OLD" || {
+    echo "$SELF: could not delete old directory: $SRC_DIR_OLD" >&2
+    exit 1
+  }
+
+  echo "Backup restored: $BKP_FILE => $SRC_DIR"
+}
+
+_showUsage() {
+  read -r -d '' USAGE <<_USAGE
+NAME
+    $SELF - Backup Manager
+
+SYNOPSIS
+    $SELF <command> [options]
+    $SELF (-h|--help|help) [command]
+
+DESCRIPTION
+    This utility can be use to backup a directory with backup rotation and to
+    restore data from a backup.
+
+COMMANDS
+
+    backup      Create a backup
+    help        Show help
+    restore     Restore a backup
+
+_USAGE
+  echo "$USAGE"
+}
+
+_showUsageBackup() {
+  read -r -d '' USAGE <<_USAGE
+NAME
+    $SELF - Backup Manager
+
+SYNOPSIS
+    $SELF backup [options]
+
+DESCRIPTION
+    Creates a backup archive named "PREFIX.DATE.$EXT" in the backup directory
+    and deletes old backups out of the latest N.
+
+    When target backup file does already exist (same PREFIX, DATE and REVISION),
+    then incremental suffix will be inserted before extension, so backup file
+    name will become "PREFIX.DATE.I.$EXT" or "PREFIX.DATE.REVISION.I.$EXT".
+
+OPTIONS
+
+    -b DIR, -B DIR
+        Required. Target directory to store a set of backups. Every backup
+        will be stored in this directory as separate archive. Directory will
+        be created when necessary only if -B is used, but not -b.
+
+    -s DIR
+        Source directory to backup what. Only directory contents will be
+        stored into archive without directory itself.
+
+    -p PREFIX
+        Prefix for backup archive filename. Default is basename of source
+        directory's real name.
+
+    -r REVISION
+        Insert ".REVISION" into backup filename right after DATE part, so
+        the backup filename will be "PREFIX.DATE.REVISION.$EXT" instead of
+        "PREFIX.DATE.$EXT".
+
+    -n NUM
+        How many of the latest backups to keep. Only files matching
+        "PREFIX.DATE*.$EXT" will counted and affected. Default is 10.
+
+EXAMPLES
+
+    $SELF backup -s build/ -B backups/ -r "\$( git rev-list -n1 --abbrev-commit HEAD )"
+
+_USAGE
+  echo "$USAGE"
+}
+
+_showUsageHelp() {
+  read -r -d '' USAGE <<_USAGE
+NAME
+    $SELF - Backup Manager
+
+SYNOPSIS
+    $SELF help [command]
+    $SELF (-h|--help) [command]
+
+DESCRIPTION
+    Show help either for specific command, or common usage.
+
+_USAGE
+  echo "$USAGE"
+}
+
+_showUsageRestore() {
+  read -r -d '' USAGE <<_USAGE
+NAME
+    $SELF - Backup Manager
+
+SYNOPSIS
+    $SELF restore [options]
+
+DESCRIPTION
+    Restore a backup to the given directory.
+
+    The backup can be specified in following ways:
+
+    -f FILE   to restore specific backup by its absolute or relative filename
+    -b DIR    to find the latest backup in backups storage directory
+
+    When both -f and -b specified, -f has priority. At least one of -b or -f is
+    required.
+
+OPTIONS
+
+    -s DIR
+        Required. The directory to restore backup into. This options is meant as
+        source directory, which was backuped with 'backup' command.
+
+    -f FILE
+        Specific backup filename by its absolute or relative filename.
+        When this option is used, -b is ignored.
+
+    -b DIR
+        Backups directory to search backup in. This implies -p with its possible
+        default value to find appropriate backup.
+
+    -p PREFIX
+        Prefix for backup archive filename. Default is basename of source
+        directory's real name, like 'backup' command uses. This options is only
+        used with -b.
+
+    -r REVISION
+        Filter backups by specific revision. This will only affect ".REVISION"
+        part in backup filename without touching any Git repo. So, '-r abcd'
+        will match backups with ".abcdef.tgz", but not with ".abc.tgz".
+
+EXAMPLES
+
+    $SELF restore -s build/ -f backups/build.2021.04-01.abcdefg.tgz
+    $SELF restore -s build/ -b backups/ -p build
+
+_USAGE
+  echo "$USAGE"
+}
+
+cmdHelp() {
+  # no arguments
+  if [ $# -eq 0 ]; then
+    _showUsage
+    return
+  fi
+  # parse "command" argument
+  local COMMAND="$1"
+  case "$COMMAND" in
+    backup)   _showUsageBackup ;;
+    help)     _showUsageHelp ;;
+    restore)  _showUsageRestore ;;
+    *)
+      echo "$SELF: no help for '$COMMAND'" >&2
+      exit 1
+      ;;
+  esac
+}
+
+main() {
+  # no arguments
+  if [ $# -eq 0 ]; then
+    _showUsage
+    exit 1
+  fi
+
+  # pick "command" argument
+  COMMAND="$1"
+  shift
+  case "$COMMAND" in
+    -h|--help|help)   cmdHelp "$@" ;;
+    backup)           cmdBackup "$@" ;;
+    restore)          cmdRestore "$@" ;;
+    *)
+      echo "$SELF: unrecognized command '$COMMAND', see -h" >&2
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"
